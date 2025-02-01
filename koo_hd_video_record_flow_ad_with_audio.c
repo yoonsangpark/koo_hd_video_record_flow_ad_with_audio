@@ -1414,7 +1414,6 @@ play_fclose:
 MAIN(argc, argv)
 {
 	HD_RESULT ret;
-	INT key;
 	VIDEO_LIVEVIEW stream[1] = {0}; //0: liveview stream
 	VIDEO_RECORD stream2[1] = {0}; //0: record stream
 	UINT32 stream_list[2] = {((UINT32)&stream[0]), ((UINT32)&stream2[0])};
@@ -1522,74 +1521,27 @@ MAIN(argc, argv)
 		goto exit;
 	}
 
-	// query user key
-	printf("Enter q to exit\n");
-	printf("\r\nif you want to record 1, enter \"s\" to trigger !!\r\n");
-
+	//1. FLOW_ON_OPEN
 	stream2[0].flow_run = FLOW_ON_OPEN;
 	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 
 	stream2[0].save_count = 0;
 
-
-#if 1
-
-
-
-if(1)
-{
+	//2. FLOW_ON_REC
 	stream2[0].sel_rec_size = 0;
-	stream2[0].enc_type = 0;
+	stream2[0].enc_type = 1;
 	stream2[0].flow_run = FLOW_ON_REC; //start record
 	while (stream2[0].flow_state != FLOW_ON_REC) usleep(100); //wait unitl flow record		
-}
-	while (1) {
-		key = GETCHAR();
-		if (key == 's') {
-			if (stream2[0].flow_run == 0) { //flow is idle
-				stream2[0].flow_run = FLOW_ON_REC; //start record
-	            while (stream2[0].flow_state != FLOW_ON_REC) usleep(100); //wait unitl flow record
-			} else { //flow is still under record
-				stream2[0].flow_run = FLOW_ON_STOP; //stop record
-	            while (stream2[0].flow_state != FLOW_ON_STOP) usleep(100); //wait unitl flow stop
-	            while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
-			}
-		}
 
-		if (key == 'q' || key == 0x3) {
-#ifdef AUDIO_OUT_ENABLE
-			outonly.out_exit = 1;
-#endif
-			// quit thread
-			if((stream2[0].flow_state == FLOW_ON_STOP)||(stream2[0].flow_state == FLOW_ON_OPEN)){
-    			break;
-            } else{
-                printf("stop record first\r\n");
-            }
-		}
-#ifdef AUDIO_OUT_ENABLE
+	//Recording... ooSSoo
+	sleep(10);
 
+	//3. FLOW_ON_STOP
+	stream2[0].flow_run = FLOW_ON_STOP; //stop record
+	while (stream2[0].flow_state != FLOW_ON_STOP) usleep(100); //wait unitl flow stop
+	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 
-		if (key == 'p') {
-			outonly.out_pause = 1;
-		}
-		if (key == 'r') {
-			outonly.out_pause = 0;
-		}		
-#endif
-		#if (DEBUG_MENU == 1)
-		if (key == 'd') {
-			// enter debug menu
-			hd_debug_run_menu();
-			printf("\r\nEnter q to exit, Enter d to debug\r\n");
-		}
-		#endif
-	}
-
-#else
-
-
-#endif 	
+	//4. FLOW_ON_CLOSE
 	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 	stream2[0].flow_run = FLOW_ON_CLOSE;
 	while (stream2[0].flow_state != FLOW_ON_CLOSE) usleep(100); //wait unitl flow idle
