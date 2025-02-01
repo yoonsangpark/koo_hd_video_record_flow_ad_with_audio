@@ -1550,6 +1550,9 @@ MAIN(argc, argv)
 	// destroy save flow_thread
 	pthread_join(stream2[0].flow_thread_id, NULL);
 
+	//stop output module
+	hd_audioout_stop(outonly.out_path);
+
 exit:
 	// close video_liveview modules (liveview)
 	ret = close_module(&stream[0]);
