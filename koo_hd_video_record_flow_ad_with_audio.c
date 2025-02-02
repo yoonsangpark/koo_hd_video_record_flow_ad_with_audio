@@ -20,7 +20,6 @@
 #include "hdal.h"
 #include "hd_debug.h"
 #include "vendor_videocapture.h"
-#include <sys/stat.h>
 
 // platform dependent
 #if defined(__LINUX)
@@ -57,11 +56,6 @@
 #define BITSTREAM_SIZE      12800
 #define FRAME_SAMPLES       1024
 #define AUD_BUFFER_CNT      5
-
-#define AUDOUT_SR       HD_AUDIO_SR_16000
-#define AUDOUT_BIT      HD_AUDIO_BIT_WIDTH_16
-#define AUDOUT_MODE     HD_AUDIO_SOUND_MODE_MONO //HD_AUDIO_SOUND_MODE_STEREO
-#define AUDOUT_MONO     HD_AUDIO_MONO_LEFT
 #endif
 #define TIME_DIFF(new_val, old_val)     ((int)(new_val) - (int)(old_val))
 
@@ -702,8 +696,8 @@ static HD_RESULT set_aout_cfg(HD_PATH_ID *p_audio_out_ctrl, HD_AUDIO_SR sample_r
 
 	/* set audio out maximum parameters */
 	audio_cfg_param.out_max.sample_rate = sample_rate;
-	audio_cfg_param.out_max.sample_bit = AUDOUT_BIT;
-	audio_cfg_param.out_max.mode = AUDOUT_MODE;
+	audio_cfg_param.out_max.sample_bit = HD_AUDIO_BIT_WIDTH_16;
+	audio_cfg_param.out_max.mode = HD_AUDIO_SOUND_MODE_STEREO;
 	audio_cfg_param.frame_sample_max = 1024;
 	audio_cfg_param.frame_num_max = 10;
 	audio_cfg_param.in_max.sample_rate = 0;
@@ -713,7 +707,7 @@ static HD_RESULT set_aout_cfg(HD_PATH_ID *p_audio_out_ctrl, HD_AUDIO_SR sample_r
 	}
 
 	/* set audio out driver parameters */
-	audio_driver_cfg_param.mono = AUDOUT_MONO;
+	audio_driver_cfg_param.mono = HD_AUDIO_MONO_LEFT;
 	audio_driver_cfg_param.output = HD_AUDIOOUT_OUTPUT_SPK;
 	ret = hd_audioout_set(audio_out_ctrl, HD_AUDIOOUT_PARAM_DRV_CONFIG, &audio_driver_cfg_param);
 
@@ -731,8 +725,8 @@ static HD_RESULT set_aout_param(HD_PATH_ID audio_out_ctrl, HD_PATH_ID audio_out_
 
 	// set hd_audioout output parameters
 	audio_out_out_param.sample_rate = sample_rate;
-	audio_out_out_param.sample_bit = AUDOUT_BIT;
-	audio_out_out_param.mode = AUDOUT_MODE;
+	audio_out_out_param.sample_bit = HD_AUDIO_BIT_WIDTH_16;
+	audio_out_out_param.mode = HD_AUDIO_SOUND_MODE_STEREO;
 	ret = hd_audioout_set(audio_out_path, HD_AUDIOOUT_PARAM_OUT, &audio_out_out_param);
 	if (ret != HD_OK) {
 		return ret;
@@ -1277,37 +1271,40 @@ static void *playback_thread(void *arg)
 {
 	INT ret, bs_size, result;
 	CHAR filename[50];
-	FILE *bs_fd;
+	FILE *bs_fd, *len_fd;
 	HD_AUDIO_FRAME  bs_in_buf = {0};
 	HD_COMMON_MEM_VB_BLK blk;
-	uintptr_t pa, va;
+	UINT32 pa, va;
 	UINT32 blk_size = 0x100000;
 	HD_COMMON_MEM_DDR_ID ddr_id = DDR_ID0;
-	uintptr_t bs_buf_start, bs_buf_curr, bs_buf_end;
-	INT au_frame_ms, elapse_time, au_buf_time;
+	UINT32 bs_buf_start, bs_buf_curr, bs_buf_end;
+	INT au_frame_ms, elapse_time, au_buf_time, timestamp;
 	UINT start_time, data_time;
 	AUDIO_OUTONLY *p_out_only = (AUDIO_OUTONLY *)arg;
-	struct stat st;
-	int nLength = 0, play_size = 0;
 
 	/* read test pattern */
-	snprintf(filename, sizeof(filename), "/mnt/sd/snd.pcm"); 
-	lstat(filename, &st);
-	nLength = st.st_size;
-
+	snprintf(filename, sizeof(filename), "/mnt/sd/audio_bs_%d_%d_%d_pcm.dat", HD_AUDIO_BIT_WIDTH_16, HD_AUDIO_SOUND_MODE_STEREO, p_out_only->sample_rate);
 	bs_fd = fopen(filename, "rb");
 	if (bs_fd == NULL) {
 		printf("[ERROR] Open %s failed!!\n", filename);
 		return 0;
 	}
-	printf("play file: [%s], nLength[%d]\n", filename, nLength);
+	printf("play file: [%s]\n", filename);
 
-	au_frame_ms = FRAME_SAMPLES * 1000 / p_out_only->sample_rate - 5;
+	snprintf(filename, sizeof(filename), "/mnt/sd/audio_bs_%d_%d_%d_pcm.len", HD_AUDIO_BIT_WIDTH_16, HD_AUDIO_SOUND_MODE_STEREO, p_out_only->sample_rate);
+	len_fd = fopen(filename, "rb");
+	if (len_fd == NULL) {
+		printf("[ERROR] Open %s failed!!\n", filename);
+		goto play_fclose;
+	}
+	printf("len file: [%s]\n", filename);
+
+	au_frame_ms = FRAME_SAMPLES * 1000 / p_out_only->sample_rate - 5; // the time(in ms) of each audio frame
 	start_time = hd_gettime_ms();
 	data_time = 0;
 
 	/* get memory */
-	blk = hd_common_mem_get_block(HD_COMMON_MEM_USER_POOL_BEGIN, blk_size, ddr_id); 
+	blk = hd_common_mem_get_block(HD_COMMON_MEM_USER_POOL_BEGIN, blk_size, ddr_id); // Get block from mem pool
 	if (blk == HD_COMMON_MEM_VB_INVALID_BLK) {
 		printf("get block fail, blk = 0x%x\n", blk);
 		goto play_fclose;
@@ -1318,28 +1315,17 @@ static void *playback_thread(void *arg)
 		goto rel_blk;
 	}
 	if (pa > 0) {
-		va = (uintptr_t)hd_common_mem_mmap(HD_COMMON_MEM_MEM_TYPE_CACHE, pa, blk_size); 
+		va = (UINT32)hd_common_mem_mmap(HD_COMMON_MEM_MEM_TYPE_CACHE, pa, blk_size); // Get virtual addr
 		if (va == 0) {
-			printf("get va fail, va(0x%lx)\n", (unsigned long)blk);
+			printf("get va fail, va(0x%x)\n", blk);
 			goto rel_blk;
 		}
 		/* allocate bs buf */
 		bs_buf_start = va;
 		bs_buf_curr = bs_buf_start;
-		bs_buf_end = bs_buf_start + (unsigned long)blk_size; 
-		printf("alloc bs_buf: start(0x%lx) curr(0x%lx) end(0x%lx) size(0x%lx)\n", (unsigned long)bs_buf_start, (unsigned long)bs_buf_curr, (unsigned long)bs_buf_end, (unsigned long)blk_size);
+		bs_buf_end = bs_buf_start + blk_size;
+		printf("alloc bs_buf: start(0x%x) curr(0x%x) end(0x%x) size(0x%x)\n", bs_buf_start, bs_buf_curr, bs_buf_end, blk_size);
 	}
-
-	memset((void *)bs_buf_start, 0, blk_size);
-	/* read bs from file */
-	result = fread((void *)bs_buf_start, 1, nLength, bs_fd);
-	if (result != nLength) {
-		printf("reading error\n");
-		goto rel_blk;
-	}
-	if (bs_fd != NULL) { fclose(bs_fd); bs_fd = NULL; }
-
-	play_size = nLength;
 
 	while (1) {
 retry:
@@ -1351,12 +1337,6 @@ retry:
 			usleep(10000);
 			goto retry;
 		}
-		if (play_size >= FRAME_SAMPLES) {
-			bs_size = FRAME_SAMPLES;
-		} else {
-			bs_size = play_size;
-			play_size = 0;
-		}
 
 		elapse_time = TIME_DIFF(hd_gettime_ms(), start_time);
 		au_buf_time = data_time - elapse_time;
@@ -1365,18 +1345,39 @@ retry:
 			//goto retry;
 		}
 
+		/* get bs size */
+		if (fscanf(len_fd, "%d %d\n", &bs_size, &timestamp) == EOF) {
+			// reach EOF, read from the beginning
+			fseek(bs_fd, 0, SEEK_SET);
+			fseek(len_fd, 0, SEEK_SET);
+			if (fscanf(len_fd, "%d %d\n", &bs_size, &timestamp) == EOF) {
+				printf("[ERROR] fscanf error\n");
+				continue;
+			}
+		}
+		if (bs_size == 0 || bs_size > BITSTREAM_SIZE) {
+			printf("Invalid bs_size(%d)\n", bs_size);
+			continue;
+		}
+
 		/* check bs buf rollback */
-		if ((bs_buf_curr + (unsigned long)bs_size) > bs_buf_end) {
+		if ((bs_buf_curr + bs_size) > bs_buf_end) {
 			bs_buf_curr = bs_buf_start;
 		}
 
+		/* read bs from file */
+		result = fread((void *)bs_buf_curr, 1, bs_size, bs_fd);
+		if (result != bs_size) {
+			printf("reading error\n");
+			continue;
+		}
 		bs_in_buf.sign = MAKEFOURCC('A','F','R','M');
 		bs_in_buf.phy_addr[0] = pa + (bs_buf_curr - bs_buf_start); // needs to add offset
 		bs_in_buf.size = bs_size;
 		bs_in_buf.ddr_id = ddr_id;
 		bs_in_buf.timestamp = hd_gettime_us();
-		bs_in_buf.bit_width = AUDOUT_BIT;
-		bs_in_buf.sound_mode = AUDOUT_MODE;
+		bs_in_buf.bit_width = HD_AUDIO_BIT_WIDTH_16;
+		bs_in_buf.sound_mode = HD_AUDIO_SOUND_MODE_STEREO;
 		bs_in_buf.sample_rate = p_out_only->sample_rate;
 
 		/* push in buffer */
@@ -1384,20 +1385,12 @@ retry:
 resend:
 		ret = hd_audioout_push_in_buf(p_out_only->out_path, &bs_in_buf, -1);
 		if (ret != HD_OK) {
+			//printf("hd_audioout_push_in_buf fail, ret(%d)\n", ret);
 			usleep(10000);
 			goto resend;
 		}
 
 		bs_buf_curr += ALIGN_CEIL_4(bs_size); // shift to next
-		play_size -= bs_size;
-		if (play_size <= 0) {
-			play_size = nLength;
-			bs_buf_curr = bs_buf_start;
-
-			/* ooSSoo */
-			break;
-
-		}
 	}
 
 	/* release memory */
@@ -1410,9 +1403,8 @@ rel_blk:
 	}
 
 play_fclose:
-	if (bs_fd != NULL) {
-		fclose(bs_fd);
-	}
+	if (bs_fd != NULL) { fclose(bs_fd);}
+	if (len_fd != NULL) { fclose(len_fd);}
 
 	return 0;
 }
@@ -1422,6 +1414,7 @@ play_fclose:
 MAIN(argc, argv)
 {
 	HD_RESULT ret;
+	INT key;
 	VIDEO_LIVEVIEW stream[1] = {0}; //0: liveview stream
 	VIDEO_RECORD stream2[1] = {0}; //0: record stream
 	UINT32 stream_list[2] = {((UINT32)&stream[0]), ((UINT32)&stream2[0])};
@@ -1494,7 +1487,7 @@ MAIN(argc, argv)
 	}
 #ifdef AUDIO_OUT_ENABLE
 	//open output module
-	outonly.sample_rate_max = AUDOUT_SR; //assign by user
+	outonly.sample_rate_max = HD_AUDIO_SR_48000; //assign by user
 	ret = open_module_audio(&outonly);
 	if(ret != HD_OK) {
 		printf("open fail=%d\n", ret);
@@ -1502,7 +1495,7 @@ MAIN(argc, argv)
 	}
 
 	//set audioout parameter
-	outonly.sample_rate = AUDOUT_SR; //assign by user
+	outonly.sample_rate = HD_AUDIO_SR_48000; //assign by user
 	ret = set_aout_param(outonly.out_ctrl, outonly.out_path, outonly.sample_rate);
 	if (ret != HD_OK) {
 		printf("set out fail=%d\n", ret);
@@ -1529,27 +1522,74 @@ MAIN(argc, argv)
 		goto exit;
 	}
 
-	//1. FLOW_ON_OPEN
+	// query user key
+	printf("Enter q to exit\n");
+	printf("\r\nif you want to record 1, enter \"s\" to trigger !!\r\n");
+
 	stream2[0].flow_run = FLOW_ON_OPEN;
 	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 
 	stream2[0].save_count = 0;
 
-	//2. FLOW_ON_REC
+
+#if 1
+
+
+
+if(1)
+{
 	stream2[0].sel_rec_size = 0;
-	stream2[0].enc_type = 1;
+	stream2[0].enc_type = 0;
 	stream2[0].flow_run = FLOW_ON_REC; //start record
 	while (stream2[0].flow_state != FLOW_ON_REC) usleep(100); //wait unitl flow record		
+}
+	while (1) {
+		key = GETCHAR();
+		if (key == 's') {
+			if (stream2[0].flow_run == 0) { //flow is idle
+				stream2[0].flow_run = FLOW_ON_REC; //start record
+	            while (stream2[0].flow_state != FLOW_ON_REC) usleep(100); //wait unitl flow record
+			} else { //flow is still under record
+				stream2[0].flow_run = FLOW_ON_STOP; //stop record
+	            while (stream2[0].flow_state != FLOW_ON_STOP) usleep(100); //wait unitl flow stop
+	            while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
+			}
+		}
 
-	//Recording... ooSSoo
-	sleep(10);
+		if (key == 'q' || key == 0x3) {
+#ifdef AUDIO_OUT_ENABLE
+			outonly.out_exit = 1;
+#endif
+			// quit thread
+			if((stream2[0].flow_state == FLOW_ON_STOP)||(stream2[0].flow_state == FLOW_ON_OPEN)){
+    			break;
+            } else{
+                printf("stop record first\r\n");
+            }
+		}
+#ifdef AUDIO_OUT_ENABLE
 
-	//3. FLOW_ON_STOP
-	stream2[0].flow_run = FLOW_ON_STOP; //stop record
-	while (stream2[0].flow_state != FLOW_ON_STOP) usleep(100); //wait unitl flow stop
-	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 
-	//4. FLOW_ON_CLOSE
+		if (key == 'p') {
+			outonly.out_pause = 1;
+		}
+		if (key == 'r') {
+			outonly.out_pause = 0;
+		}		
+#endif
+		#if (DEBUG_MENU == 1)
+		if (key == 'd') {
+			// enter debug menu
+			hd_debug_run_menu();
+			printf("\r\nEnter q to exit, Enter d to debug\r\n");
+		}
+		#endif
+	}
+
+#else
+
+
+#endif 	
 	while (stream2[0].flow_run != 0) usleep(100); //wait unitl flow idle
 	stream2[0].flow_run = FLOW_ON_CLOSE;
 	while (stream2[0].flow_state != FLOW_ON_CLOSE) usleep(100); //wait unitl flow idle
@@ -1557,9 +1597,6 @@ MAIN(argc, argv)
 	stream2[0].flow_quit = 1;
 	// destroy save flow_thread
 	pthread_join(stream2[0].flow_thread_id, NULL);
-
-	//stop output module
-	hd_audioout_stop(outonly.out_path);
 
 exit:
 	// close video_liveview modules (liveview)
